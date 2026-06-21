@@ -1,0 +1,76 @@
+name: Build WebDriverAgent (iOS 12, unsigned)
+
+# Build WebDriverAgentRunner.ipa CHO iOS 12 mà KHÔNG cần Mac.
+# Cách dùng:
+#   1. Push repo này lên GitHub (hoặc tạo repo riêng chứa file workflow này).
+#   2. Tab Actions -> "Build WebDriverAgent (iOS 12, unsigned)" -> Run workflow.
+#   3. Tải artifact "WebDriverAgentRunner-ios12" -> giải nén lấy WebDriverAgentRunner.ipa.
+#   4. Cài lên máy jailbreak: python tools/install_wda.py WebDriverAgentRunner.ipa
+#      (cần AppSync Unified). Rồi: python tools/launch_wda.py
+#
+# GHI CHÚ QUAN TRỌNG:
+#   * WDA mới (v14+) yêu cầu iOS 15 -> phải dùng tag CŨ cho iOS 12.
+#   * Nếu build lỗi vì API chỉ-có-trên-iOS-mới, hạ 'wda_ref' xuống tag cũ hơn
+#     (thử lần lượt: v5.x -> v4.x). deployment_target giữ 12.0.
+#   * IPA này UNSIGNED (CODE_SIGNING_ALLOWED=NO) — chỉ chạy trên máy JAILBREAK
+#     có AppSync Unified (hoặc tự ldid -S trên máy).
+
+on:
+  workflow_dispatch:
+    inputs:
+      wda_ref:
+        description: "appium/WebDriverAgent ref (tag/branch). Cũ hơn = hợp iOS 12 hơn."
+        default: "v5.8.2"
+        required: true
+      deployment_target:
+        description: "IPHONEOS_DEPLOYMENT_TARGET"
+        default: "12.0"
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-13          # có Xcode 14.x (hỗ trợ deploy iOS 12)
+    steps:
+      - name: Chọn Xcode 14.3.1 (cho phép deploy iOS 12)
+        run: |
+          ls /Applications | grep Xcode || true
+          sudo xcode-select -s /Applications/Xcode_14.3.1.app || sudo xcode-select -s /Applications/Xcode_14.2.app
+          xcodebuild -version
+
+      - name: Checkout WebDriverAgent (${{ github.event.inputs.wda_ref }})
+        uses: actions/checkout@v4
+        with:
+          repository: appium/WebDriverAgent
+          ref: ${{ github.event.inputs.wda_ref }}
+
+      - name: Build for testing (unsigned, target iOS ${{ github.event.inputs.deployment_target }})
+        run: |
+          set -eo pipefail
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            IPHONEOS_DEPLOYMENT_TARGET=${{ github.event.inputs.deployment_target }} \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Đóng gói IPA
+        run: |
+          set -eo pipefail
+          APP=$(find build/Build/Products -maxdepth 2 -name "*-Runner.app" | head -1)
+          echo "Runner.app = $APP"
+          test -n "$APP"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          /usr/bin/zip -qr WebDriverAgentRunner.ipa Payload
+          ls -la WebDriverAgentRunner.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgentRunner-ios12
+          path: WebDriverAgentRunner.ipa
+          if-no-files-found: error
